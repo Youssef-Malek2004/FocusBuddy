@@ -16,6 +16,47 @@ public class FocusAnalyzer
         "instagram.com", "tiktok.com", "reddit.com"
     };
 
+    /// <summary>
+    /// Quick focus check using only RLM analysis (called every 5s)
+    /// </summary>
+    public FocusStatus DetermineQuickFocus(RLMAnalysis rlmAnalysis, FocusTask task)
+    {
+        return new FocusStatus
+        {
+            State = rlmAnalysis.IsFocused ? FocusState.Focused : FocusState.Distracted,
+            Reason = rlmAnalysis.Reasoning,
+            Confidence = rlmAnalysis.Confidence,
+            Timestamp = DateTime.Now
+        };
+    }
+
+    /// <summary>
+    /// Deep focus check combining RLM and VLLM (called every 15s)
+    /// </summary>
+    public FocusStatus DetermineDeepFocus(RLMAnalysis rlmAnalysis, VisionAnalysis visionAnalysis, FocusTask task)
+    {
+        // Weight vision analysis more heavily for deep checks
+        bool isFocused = (rlmAnalysis.IsFocused && visionAnalysis.IsFocused) ||
+                        (rlmAnalysis.Confidence > 0.7 && visionAnalysis.IsFocused);
+
+        // Combine reasoning from both sources
+        string combinedReason = $"RLM: {rlmAnalysis.Reasoning}\nVision: {visionAnalysis.Reasoning}";
+
+        // Average confidence
+        double combinedConfidence = (rlmAnalysis.Confidence + (visionAnalysis.IsFocused ? 0.85 : 0.15)) / 2.0;
+
+        return new FocusStatus
+        {
+            State = isFocused ? FocusState.Focused : FocusState.Distracted,
+            Reason = combinedReason,
+            Confidence = combinedConfidence,
+            Timestamp = DateTime.Now
+        };
+    }
+
+    /// <summary>
+    /// Legacy method for backward compatibility
+    /// </summary>
     public FocusStatus DetermineFocus(OcrResult? ocr, VisionAnalysis vision, FocusTask task)
     {
         // Check OCR for distraction indicators

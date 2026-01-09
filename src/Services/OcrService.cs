@@ -28,7 +28,8 @@ public class OcrService
             var (appName, windowTitle) = await _windowInfo.GetActiveWindowInfoAsync();
 
             // Perform actual OCR using Apple Vision Framework via Swift
-            string extractedText = await PerformVisionOcrAsync(screenshot);
+            // Note: We'll use native screencapture for better Vision framework compatibility
+            string extractedText = await PerformVisionOcrWithNativeCapture();
 
             // Summarize OCR text to avoid overwhelming the VLLM
             string summarizedText = SummarizeOcrText(extractedText, appName);
@@ -45,8 +46,9 @@ public class OcrService
                 Timestamp = DateTime.Now
             };
 
-            // Log summary without printing text (too verbose)
-            Console.WriteLine($"[OCR] {result.ActiveApp} - Extracted {extractedText.Length} chars");
+            // Log summary
+            var preview = summarizedText.Length > 50 ? summarizedText.Substring(0, 50) + "..." : summarizedText;
+            Console.WriteLine($"[OCR] {result.ActiveApp} - Extracted {extractedText.Length} chars: {preview}");
 
             return result;
         }
@@ -65,17 +67,93 @@ public class OcrService
         }
     }
 
+    private async Task<string> PerformVisionOcrWithNativeCapture()
+    {
+        try
+        {
+            // Use native macOS screencapture for Vision framework compatibility
+            string tempFile = Path.Combine(Path.GetTempPath(), $"focusai_ocr_{Guid.NewGuid()}.png");
+
+            try
+            {
+                // Capture screenshot using native macOS command
+                var capturePsi = new ProcessStartInfo
+                {
+                    FileName = "/usr/sbin/screencapture",
+                    Arguments = $"-x \"{tempFile}\"", // -x = no sound
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using var captureProcess = Process.Start(capturePsi);
+                if (captureProcess != null)
+                {
+                    await captureProcess.WaitForExitAsync();
+
+                    if (!File.Exists(tempFile))
+                    {
+                        Console.WriteLine("[WARN] Native screencapture failed to create file");
+                        return string.Empty;
+                    }
+                }
+
+                // Now run OCR on the native screenshot
+                var ocrPsi = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/swift",
+                    Arguments = $"\"{_swiftOcrPath}\" \"{tempFile}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using var ocrProcess = Process.Start(ocrPsi);
+                if (ocrProcess != null)
+                {
+                    string output = await ocrProcess.StandardOutput.ReadToEndAsync();
+                    string error = await ocrProcess.StandardError.ReadToEndAsync();
+                    await ocrProcess.WaitForExitAsync();
+
+                    if (!string.IsNullOrEmpty(error) && error.Contains("ERROR"))
+                    {
+                        Console.WriteLine($"[WARN] Vision OCR error: {error}");
+                        return string.Empty;
+                    }
+
+                    return output.Trim();
+                }
+            }
+            finally
+            {
+                // Cleanup temp file
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WARN] Vision OCR with native capture failed: {ex.Message}");
+        }
+
+        return string.Empty;
+    }
+
+    // Legacy method - kept for reference, not used anymore
+    // Now using PerformVisionOcrWithNativeCapture() for better compatibility
     private async Task<string> PerformVisionOcrAsync(byte[] screenshot)
     {
         try
         {
-            // Save screenshot to temp file
             string tempFile = Path.Combine(Path.GetTempPath(), $"focusai_ocr_{Guid.NewGuid()}.png");
             await File.WriteAllBytesAsync(tempFile, screenshot);
 
             try
             {
-                // Call Swift helper
                 var psi = new ProcessStartInfo
                 {
                     FileName = "/usr/bin/swift",
@@ -104,7 +182,6 @@ public class OcrService
             }
             finally
             {
-                // Cleanup temp file
                 if (File.Exists(tempFile))
                 {
                     File.Delete(tempFile);
